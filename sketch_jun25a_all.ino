@@ -6,21 +6,22 @@
 const char* ssid = "ESP-RGB";
 const char* password = "12345678";
 
-// 建立 Web 伺服器 / Web server on port 80
 ESP8266WebServer server(80);
 
-// RGB LED 腳位 / RGB LED pins
+// 腳位設定 / Pin definitions
 const int Red = 12;
 const int Green = 13;
 const int Blue = 14;
+const int DHTPIN = 5;           // DHT11 感測腳位 / DHT11 data pin
+const int irLedPin = 2;        // IR LED 腳位 / IR LED pin (2)
+const int irRxPin = 4;          // 紅外線接收腳位 / IR receiver pin (D2)
+const int buttonPin = 0;        // 按鍵腳位 / Button pin
+const int buzzerPin = 15;       // 蜂鳴器腳位 / Buzzer pin
 
-// DHT11 感測器設定 / DHT11 setup
-#define DHTPIN 5
-#define DHTTYPE DHT11
-DHT dht(DHTPIN, DHTTYPE);
-
-// 彩虹控制變數 / Rainbow effect control flag
+DHT dht(DHTPIN, DHT11);
 bool rainbowActive = false;
+bool buzzerTrigger = false;
+bool buzzerLog = false;
 #define FADESPEED 5
 
 void setup() {
@@ -28,167 +29,160 @@ void setup() {
   pinMode(Red, OUTPUT);
   pinMode(Green, OUTPUT);
   pinMode(Blue, OUTPUT);
-  dht.begin();
+  pinMode(irRxPin, INPUT);
+  pinMode(buttonPin, INPUT_PULLUP);
+  pinMode(buzzerPin, OUTPUT);
 
-  // 啟動 Wi-Fi 熱點 / Start Wi-Fi access point
+  dht.begin();
+  tone(irLedPin, 38000); // 啟動 IR LED 輸出 38kHz / Start 38kHz IR LED output
+
   WiFi.softAP(ssid, password);
   Serial.print("AP IP address: ");
   Serial.println(WiFi.softAPIP());
 
-  // 網頁首頁 / Web root page
+  // 首頁 / Main page
   server.on("/", []() {
     String html = R"rawliteral(
 <!DOCTYPE html>
-<html lang="en">
+<html lang='en'>
 <head>
-  <meta charset="UTF-8">
-  <title>DHT11 Monitor</title>
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <meta charset='UTF-8'>
+  <meta name='viewport' content='width=device-width, initial-scale=1'>
+  <title>ESP Sensor Monitor</title>
+  <script src='https://cdn.jsdelivr.net/npm/chart.js'></script>
   <style>
     body {
-      font-family: 'Segoe UI', sans-serif;
-      margin: 0;
-      padding: 20px;
-      text-align: center; /* 對齊至中 / center the content */
-      background-color: white;
-      color: #222;
+      font-family: sans-serif;
+      text-align: center;
+      background-color: #fff;
+      color: #000;
       transition: background-color 0.5s, color 0.5s;
     }
-
     @media (prefers-color-scheme: dark) {
-      body {
-        background-color: #111;
-        color: #eee;
-      }
-      button {
-        background-color: #444;
-      }
+      body { background-color: #111; color: #eee; }
+      button { background-color: #333; color: #fff; }
     }
-
-    h2 {
-      font-size: 1.6em;
-    }
-
-    #values {
-      font-size: 1.4em;
-      margin: 10px 0;
-    }
-
-    canvas {
-      width: 100%;
-      max-width: 600px;
-      margin: auto;
-    }
-
-    .btn {
-      display: inline-block;
-      margin: 12px;
-      padding: 14px 28px;
-      font-size: 1.1em;
-      background-color: #2196F3;
-      color: white;
-      border: none;
-      border-radius: 8px;
-      cursor: pointer;
-      transition: 0.3s;
-    }
-
-    .btn:hover {
-      background-color: #0b7dda;
-    }
+    canvas { max-width: 600px; margin: 20px auto; display: block; }
+    .btn { padding: 10px 20px; font-size: 1em; margin: 10px; }
   </style>
 </head>
 <body>
-  <h2>🌡️ DHT11 Temperature & Humidity</h2>
+  <h2>📊 ESP8266 Sensor Monitor</h2>
   <div id="values">
-    🌡 Temp: <span id="temp">--</span> °C |
-    💧 Humidity: <span id="humidity">--</span> %
+    🌡 Temp: <span id="temp">--</span> °C |<br>
+    💧 Humidity: <span id="humidity">--</span> %<br>
+    🌞 LDR: <span id="ldr">--</span> |<br>
+    🚦 IR Sensor: <span id="ir">--</span>
   </div>
-  <canvas id="myChart"></canvas>
-  <div>
-    <a href="/start"><button class="btn">🌈 Start Rainbow</button></a>
-    <a href="/stop"><button class="btn">🛑 Stop</button></a>
-  </div>
+  <p>
+    <button class="btn" onclick="triggerBuzzer()">🔔 Trigger Buzzer</button><br>
+    <button class="btn" onclick="toggleChart()">📈 Toggle Chart</button><br>
+    <button class="btn" onclick="location.href='/start'">🌈 Start Rainbow</button><br>
+    <button class="btn" onclick="location.href='/stop'">🛑 Stop Rainbow</button>
+  </p>
+  <div id="buzzerLog">🔕 Buzzer not triggered</div>
+
+  <canvas id="chartTemp" height="150"></canvas>
+  <canvas id="chartLDR" height="150" style="display:none"></canvas>
+  <canvas id="chartIR" height="150" style="display:none"></canvas>
 
   <script>
     const labels = [];
-    const tempData = [];
-    const humData = [];
-
-    const ctx = document.getElementById('myChart').getContext('2d');
-    const myChart = new Chart(ctx, {
-      type: 'line',
-      data: {
-        labels: labels,
-        datasets: [{
-          label: 'Temp (°C)',
-          data: tempData,
-          borderColor: 'red',
-          fill: false
-        }, {
-          label: 'Humidity (%)',
-          data: humData,
-          borderColor: 'blue',
-          fill: false
-        }]
-      },
-      options: {
-        responsive: true,
-        scales: {
-          x: { title: { display: true, text: 'Time' } },
-          y: { title: { display: true, text: 'Value' }, suggestedMin: 0, suggestedMax: 100 }
-        }
-      }
+    const tempData = [], humData = [], ldrData = [], irData = [];
+    const ctxTemp = document.getElementById('chartTemp').getContext('2d');
+    const ctxLDR = document.getElementById('chartLDR').getContext('2d');
+    const ctxIR  = document.getElementById('chartIR').getContext('2d');
+    const chartTemp = new Chart(ctxTemp, {
+      type: 'line', data: { labels, datasets: [
+        { label: 'Temp (°C)', data: tempData, borderColor: 'red', fill: false },
+        { label: 'Humidity (%)', data: humData, borderColor: 'blue', fill: false }
+      ] },
+      options: { responsive: true, scales: { y: { min: 0, max: 100 } } }
+    });
+    const chartLDR = new Chart(ctxLDR, {
+      type: 'line', data: { labels, datasets: [
+        { label: 'LDR', data: ldrData, borderColor: 'orange', fill: false }
+      ] },
+      options: { responsive: true, scales: { y: { min: 0, max: 1024 } } }
+    });
+    const chartIR = new Chart(ctxIR, {
+      type: 'line', data: { labels, datasets: [
+        { label: 'IR Sensor (1=detect)', data: irData, borderColor: 'green', fill: false }
+      ] },
+      options: { responsive: true, scales: { y: { min: 0, max: 1 } } }
     });
 
-    // 每 3 秒向 /data 取得 JSON 溫濕度 / fetch DHT11 data every 3 seconds
     function fetchData() {
-      fetch('/data')
-        .then(res => res.json())
-        .then(data => {
-          const now = new Date();
-          const t = data.temp.toFixed(1);
-          const h = data.humidity.toFixed(1);
-          document.getElementById('temp').textContent = t;
-          document.getElementById('humidity').textContent = h;
+      fetch('/data').then(res => res.json()).then(data => {
+        const time = new Date().toLocaleTimeString();
+        labels.push(time);
+        if (labels.length > 30) labels.shift();
+        tempData.push(data.temp); if (tempData.length > 30) tempData.shift();
+        humData.push(data.humidity); if (humData.length > 30) humData.shift();
+        ldrData.push(data.ldr); if (ldrData.length > 30) ldrData.shift();
+        irData.push(data.ir); if (irData.length > 30) irData.shift();
 
-          const timeStr = now.toLocaleTimeString();
-          labels.push(timeStr);
-          tempData.push(t);
-          humData.push(h);
+        document.getElementById('temp').textContent = data.temp;
+        document.getElementById('humidity').textContent = data.humidity;
+        document.getElementById('ldr').textContent = data.ldr;
+        document.getElementById('ir').textContent = data.ir;
 
-          if (labels.length > 20) {
-            labels.shift(); tempData.shift(); humData.shift();
-          }
-          myChart.update();
-        });
+        chartTemp.update(); chartLDR.update(); chartIR.update();
+        if (data.buzzer) {
+          document.getElementById('buzzerLog').textContent = '🔔 Buzzer was triggered';
+        }
+      });
     }
 
-    setInterval(fetchData, 3000); // 每三秒更新圖表 / update chart every 3s
+    function triggerBuzzer() {
+      fetch('/buzzer').then(() => {
+        document.getElementById('buzzerLog').textContent = '🔔 Buzzer triggered manually';
+      });
+    }
+
+    function toggleChart() {
+      const l = document.getElementById('chartLDR');
+      const i = document.getElementById('chartIR');
+      l.style.display = l.style.display === 'none' ? 'block' : 'none';
+      i.style.display = i.style.display === 'none' ? 'block' : 'none';
+    }
+
+    setInterval(fetchData, 3000);
   </script>
 </body>
 </html>
     )rawliteral";
-
     server.send(200, "text/html", html);
   });
 
-  // 回傳 JSON 格式資料 / Serve JSON data from DHT11
   server.on("/data", []() {
     float h = dht.readHumidity();
     float t = dht.readTemperature();
-    String json = "{\"temp\":" + String(t, 1) + ",\"humidity\":" + String(h, 1) + "}";
+    int ldr = analogRead(A0);
+    int ir = digitalRead(irRxPin) == LOW ? 1 : 0;
+    int buzzer = buzzerLog ? 1 : 0;
+    buzzerLog = false;
+    String json = "{";
+    json += "\"temp\":" + String(t, 1) + ",";
+    json += "\"humidity\":" + String(h, 1) + ",";
+    json += "\"ldr\":" + String(ldr) + ",";
+    json += "\"ir\":" + String(ir) + ",";
+    json += "\"buzzer\":" + String(buzzer);
+    json += "}";
     server.send(200, "application/json", json);
   });
 
-  // 開啟彩虹模式 / Start rainbow
+  server.on("/buzzer", []() {
+    buzzerTrigger = true;
+    buzzerLog = true;
+    server.send(200, "text/plain", "OK");
+  });
+
   server.on("/start", []() {
     rainbowActive = true;
     server.send(200, "text/html", "<h2>🌈 Rainbow started</h2><a href='/'>Back</a>");
   });
 
-  // 停止彩虹模式 / Stop rainbow
   server.on("/stop", []() {
     rainbowActive = false;
     analogWrite(Red, 0);
@@ -197,12 +191,29 @@ void setup() {
     server.send(200, "text/html", "<h2>🛑 Rainbow stopped</h2><a href='/'>Back</a>");
   });
 
-  server.begin(); // 啟動網頁伺服器 / Start web server
+  server.begin();
   Serial.println("Web server started");
 }
 
 void loop() {
-  server.handleClient(); // 處理客戶端請求 / Handle client requests
+  server.handleClient();
+
+  if (buzzerTrigger) {
+    digitalWrite(buzzerPin, HIGH);
+    delay(100);
+    digitalWrite(buzzerPin, LOW);
+    buzzerTrigger = false;
+  }
+
+  static bool lastBtn = HIGH;
+  bool currentBtn = digitalRead(buttonPin);
+  if (lastBtn == HIGH && currentBtn == LOW) {
+    digitalWrite(buzzerPin, HIGH);
+    delay(100);
+    digitalWrite(buzzerPin, LOW);
+    buzzerLog = true;
+  }
+  lastBtn = currentBtn;
 
   if (rainbowActive) {
     int r, g, b;
