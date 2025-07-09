@@ -21,3 +21,6 @@ https://randomnerdtutorials.com/getting-started-with-esp8266-wifi-transceiver-re
 
 * DiFi 是一塊整合感測元件在板子上的學習板，針對學生上課時可省去接線的困擾。
 * ArduinoDroid可以開啟新的sketch ，複製貼上程式碼，按下compile，再上傳。
+* 打開ARDUINO軟體,檔案>>偏好設定,在下方額外的開發板管理員網址:輸入
+http://arduino.esp8266.com/stable/package_esp8266com_index.json
+ 
